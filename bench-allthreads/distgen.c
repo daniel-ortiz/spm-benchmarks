@@ -3,9 +3,11 @@
 #include <assert.h>
 #include <malloc.h>
 #include <sys/time.h>
-#include <pthread.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <sched.h>
 #include <numaif.h>
-
+#include <pthread.h>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -15,30 +17,55 @@
 #define MAXTHREADS 64
 #define PHAS1_TIME 20
 
+typedef struct {
+	double* start[MAXTHREADS];
+	long size;
+	int nthreads;
+} memory_region;
+
+
 struct entry {
   double v;
   struct entry *next;
 };
-typedef struct {
-	double* start[2];
-	long size;
-} memory_region;
-
 
 int distSize[MAXDISTCOUNT];
 int distIter[MAXDISTCOUNT];
 int distBlocks[MAXDISTCOUNT];
 int distsUsed = 0;
 int verbose = 0;
-int trasv_count=10;
+int trasv_count=20;
 long count_through=1;
+
+ static  int cpu0[16]={0,1,2,3,4,5,6,7,16,17,18,19,20,21,22,23};
+  static int cpu1[16]={8,9,10,11,12,13,14,15,24,25,26,27,28,29,30,31};
+  static int core_to_cpu[32]={0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0,0,0,0,0,0,1,1,1,1,1,1,1,1};
+  
 double wtime()
 {
   struct timeval tv;
   gettimeofday(&tv, 0);
   return tv.tv_sec+1e-6*tv.tv_usec;
 }
+int get_opposite_core(int ncore){
 
+		int position=-1,end=0,iserr=0;
+		//find core in the array
+		int current_cpu=core_to_cpu[ncore];
+		int* arr= current_cpu==0 ? cpu0 : cpu1; 
+		for(int i=0; i<16 && !end; i++){
+			if(arr[i]==ncore){
+					position=i;
+					end=1;
+			}	
+		}
+		if(position <0){
+				printf("cpu not found");
+				return -1;
+		}
+		
+		return position;
+}
 void * call_move_pages(void * arg){
 	memory_region *mr=(memory_region*)arg;
 	void** pages;
@@ -49,19 +76,23 @@ void * call_move_pages(void * arg){
 	int * nodes=malloc(sizeof(int) * pages_size);
 	
 	sleep(PHAS1_TIME);
-	for(int jj=0; jj<2; jj++){
+	for(int jj=0; jj<mr->nthreads; jj++){
 		for(int i=0; i<pages_size; i++){
+				int current_cpu=core_to_cpu[jj];
 				double * offset= mr->start[jj]+ i*512;
 				pages[i]=(void *) offset;
-				nodes[i]=1;
+				nodes[i]=current_cpu;
 			}
-			
+		int current_cpu=core_to_cpu[jj];
+		printf("%d %d \n", jj, current_cpu);	
 		for (j=0; j<9; j++ ){
 			begin = j* (pages_size/10);
 			
+			 printf("move pages core %d dest %d  \n", jj,current_cpu );
 			int ret= 	move_pages(getpid(), pages_size/10, pages+begin, nodes+begin, status+begin,0);
+			printf("%d %d \n",jj,ret);
 		
-			 printf("move pages res %d \n", ret);
+			
 		}
 	j++;
 	begin = 9* (pages_size/10);
@@ -147,7 +178,7 @@ void runBench(struct entry* buffer,
   double lsum = *sum;
   int idxIncr = blockDiff * BLOCKLEN/sizeof(struct entry);
   int idxMax = blocks * BLOCKLEN/sizeof(struct entry);
-	double time1,diff;
+  double time1,diff;
 	time1=wtime();
   for(i=0; i<iter; i++) {
     lsum += buffer[0].v;
@@ -155,38 +186,37 @@ void runBench(struct entry* buffer,
       lsum += buffer[0].v;
       for(k=0; k<distIter[d]; k++) {
 	//fprintf(stderr, "D %d, I %d\n", d, k);
-		*aCount += distBlocks[d];
-		max = distBlocks[d];
-		count_through++;
-		
-			if (!depChain) {
-			  idx = 0;
-			  for(j=0; j<max; j++) {
-				lsum += buffer[idx].v;
-				idx += idxIncr;
-				if (idx >= idxMax) idx -= idxMax;
-				//fprintf(stderr, " Off %d\n", idx);
-			  }
-			}
-			else {
-			  struct entry* p = buffer;
-			  for(j=0; j<max; j++) {
-				lsum += p->v;
-				p = p->next;
-				//fprintf(stderr, " POff %d\n", (int)(p - buffer));
-			  }
-			}
-			if(count_through==trasv_count){
-				diff=wtime()-time1;
-				diff=(trasv_count*max)/diff;
-				time1=wtime();
-				count_through=1;
-				printf("%f \n",diff);
-			}
+	*aCount += distBlocks[d];
+	max = distBlocks[d];
+	count_through++;
+	if (!depChain) {
+	  idx = 0;
+	  for(j=0; j<max; j++) {
+	    lsum += buffer[idx].v;
+	    idx += idxIncr;
+	    if (idx >= idxMax) idx -= idxMax;
+	    //fprintf(stderr, " Off %d\n", idx);
+	  }
+	}
+	else {
+	  struct entry* p = buffer;
+	  for(j=0; j<max; j++) {
+	    lsum += p->v;
+	    p = p->next;
+	    //fprintf(stderr, " POff %d\n", (int)(p - buffer));
+	  }
+	  
+	}
+		if(count_through==trasv_count){
+			diff=wtime()-time1;
+			diff=(trasv_count*max)/diff;
+			time1=wtime();
+			count_through=1;
+			printf("%f \n",diff);
+		}
       }
     }
   }
-  printf("counts %ld -", count_through);
 
   *sum = lsum;
 }
@@ -231,13 +261,11 @@ int main(int argc, char* argv[])
   unsigned long aCount = 0;
   int blocks, blockDiff;
   double sum = 0.0;
-  int t, tcount;
+  int t, tcount,thr;
   struct entry* buffer[MAXTHREADS];
   double tt;
-  int thr=0;
-  memory_region mr;
   pthread_t move_thread;
-  
+  memory_region mr;
   verbose = 1;  
   for(arg=1; arg<argc; arg++) {
     if (argv[arg][0] == '-') {
@@ -276,6 +304,8 @@ int main(int argc, char* argv[])
   tcount = 1;
 #endif
 
+
+  
   // calculate expected number of accesses
   aCount = 0;
   for(d=0; d<distsUsed; d++)
@@ -299,20 +329,33 @@ int main(int argc, char* argv[])
   assert(tcount < MAXTHREADS);
   assert(sizeof(struct entry) == 16);
   
- //Modified so that initialization is done only in the master
-	#pragma omp master
-	{
+  //array of cpu members
+  //WARNING This mapping depends specifically on the machine
+  
+
+  
+#pragma omp parallel for
+  for(t=0; t<tcount; t++) {
     struct entry *next, *buf;
     int idx, blk, nextIdx;
     int idxMax = blocks * BLOCKLEN/sizeof(struct entry);
     int idxIncr = blockDiff * BLOCKLEN/sizeof(struct entry);
-
+	
+	//code to decide which buffer to initialize
+		int num_core=sched_getcpu();
+		int position= get_opposite_core(num_core);
+		int current_cpu=core_to_cpu[num_core];
+		int assigned_core= current_cpu==0 ? cpu1[position] : cpu0[position] ;
+		// allocate and initialize used memory
+		
+		
     // allocate and initialize used memory
-    buffer[t] = (struct entry*) memalign(64, blocks * BLOCKLEN);
+    buffer[assigned_core] = (struct entry*) memalign(64, blocks * BLOCKLEN);
+    buf = buffer[assigned_core];
+    printf("Running on core %d , will initialize core %d %p\n", num_core, assigned_core,buffer[assigned_core]);
     mr.size=blocks * BLOCKLEN;
-    mr.start[t]= buffer[t];
-    
-    buf = buffer[t];
+	mr.start[assigned_core]= buffer[assigned_core];
+	mr.nthreads=tcount;
     for(idx=0; idx < idxMax; idx++) {
       buf[idx].v = (double) idx;
       buf[idx].next = 0;
@@ -328,26 +371,23 @@ int main(int argc, char* argv[])
       idx = nextIdx;
     }
   }
-   thr = pthread_create(&move_thread, NULL,&call_move_pages, &mr);
+
   if (verbose)
     fprintf(stderr, "Running ...\n");
-
+	//thr = pthread_create(&move_thread, NULL,&call_move_pages, &mr);
   aCount = 0;
   tt = wtime();
-//Modified so that access is done only by other threads than the master
-//it is advisable to use pinning to place this threads on the other numa node
-#pragma omp parallel
-{ 
-    if (omp_get_thread_num()!=0){
-		double tsum = 0.0;
-		unsigned long taCount = 0;
 
-		runBench(buffer[t], iter, blocks, blockDiff, depChain,
-			 &tsum, &taCount);
+#pragma omp parallel for reduction(+:sum) reduction(+:aCount)
+  for(t=0; t<tcount; t++) {
+    double tsum = 0.0;
+    unsigned long taCount = 0;
 
-		sum += tsum;
-		aCount += taCount;
-	}
+    runBench(buffer[t], iter, blocks, blockDiff, depChain,
+	     &tsum, &taCount);
+
+    sum += tsum;
+    aCount += taCount;
   }
 
   tt = wtime() - tt;
