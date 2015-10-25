@@ -13,7 +13,8 @@
 #define MAXDISTCOUNT 10
 #define BLOCKLEN 64
 #define MAXTHREADS 64
-#define PHAS1_TIME 20
+//how much time to wait before moving pages
+#define PHAS1_TIME 45
 
 struct entry {
   double v;

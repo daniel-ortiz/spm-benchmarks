@@ -15,7 +15,7 @@
 #define MAXDISTCOUNT 10
 #define BLOCKLEN 64
 #define MAXTHREADS 64
-#define PHAS1_TIME 20
+#define PHAS1_TIME 45
 
 typedef struct {
 	double* start[MAXTHREADS];
@@ -372,12 +372,16 @@ int main(int argc, char* argv[])
     }
   }
 
+
   if (verbose)
     fprintf(stderr, "Running ...\n");
-	//thr = pthread_create(&move_thread, NULL,&call_move_pages, &mr);
+   #ifdef MOVEALL	
+  	thr = pthread_create(&move_thread, NULL,&call_move_pages, &mr);
+   #endif
   aCount = 0;
-  tt = wtime();
 
+  tt = wtime();
+  
 #pragma omp parallel for reduction(+:sum) reduction(+:aCount)
   for(t=0; t<tcount; t++) {
     double tsum = 0.0;
