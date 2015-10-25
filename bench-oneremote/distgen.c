@@ -327,8 +327,10 @@ int main(int argc, char* argv[])
       buf[idx].next = buf + nextIdx;
       idx = nextIdx;
     }
-  }
-   thr = pthread_create(&move_thread, NULL,&call_move_pages, &mr);
+  } 
+   #ifdef MOVEALL	
+    thr = pthread_create(&move_thread, NULL,&call_move_pages, &mr);
+   #endif
   if (verbose)
     fprintf(stderr, "Running ...\n");
 
