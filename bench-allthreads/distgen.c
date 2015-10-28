@@ -264,6 +264,10 @@ int main(int argc, char* argv[])
   int t, tcount,thr;
   struct entry* buffer[MAXTHREADS];
   double tt;
+  int size_init=sizeof(int)*numa_num_configured_cpus();
+  int *initialized_threads=malloc(size_init);
+  memset(initialized_threads,0,size_init );
+  int num_initialized_threads=0;
   pthread_t move_thread;
   memory_region mr;
   verbose = 1;  
@@ -328,13 +332,10 @@ int main(int argc, char* argv[])
 
   assert(tcount < MAXTHREADS);
   assert(sizeof(struct entry) == 16);
-  
-  //array of cpu members
-  //WARNING This mapping depends specifically on the machine
-  
 
-  
-#pragma omp parallel for
+
+	
+#pragma omp parallel for 
   for(t=0; t<tcount; t++) {
     struct entry *next, *buf;
     int idx, blk, nextIdx;
@@ -370,6 +371,13 @@ int main(int argc, char* argv[])
       buf[idx].next = buf + nextIdx;
       idx = nextIdx;
     }
+
+  
+	#pragma omp critical
+	{
+		initialized_threads[num_initialized_threads]=num_core;
+		num_initialized_threads++;
+	}
   }
 
 
@@ -386,8 +394,9 @@ int main(int argc, char* argv[])
   for(t=0; t<tcount; t++) {
     double tsum = 0.0;
     unsigned long taCount = 0;
-
-    runBench(buffer[t], iter, blocks, blockDiff, depChain,
+	int curr_thr=initialized_threads[t];
+	//we need to make sure to access only the initialized threads
+    runBench(buffer[curr_thr], iter, blocks, blockDiff, depChain,
 	     &tsum, &taCount);
 
     sum += tsum;
