@@ -7,7 +7,9 @@
 #include <unistd.h>
 #include <sched.h>
 #include <numaif.h>
+#include <numa.h>
 #include <pthread.h>
+#include <string.h>
 #ifdef _OPENMP
 #include <omp.h>
 #endif
@@ -394,9 +396,18 @@ int main(int argc, char* argv[])
   for(t=0; t<tcount; t++) {
     double tsum = 0.0;
     unsigned long taCount = 0;
-	int curr_thr=initialized_threads[t];
+	int num_core=sched_getcpu(),i,core_found=0;
+	
+	//We need to call this function on the memory buffer of the core it is running
+	for(i=0;i<num_initialized_threads && !core_found;i++){
+		if(initialized_threads[i] == num_core)
+			core_found=1;
+	}
+	
+	if(!core_found)
+		printf("core %d was not found \n",num_core);
 	//we need to make sure to access only the initialized threads
-    runBench(buffer[curr_thr], iter, blocks, blockDiff, depChain,
+    runBench(buffer[num_core], iter, blocks, blockDiff, depChain,
 	     &tsum, &taCount);
 
     sum += tsum;
