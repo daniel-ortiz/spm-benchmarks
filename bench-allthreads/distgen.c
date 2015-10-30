@@ -181,6 +181,7 @@ void runBench(struct entry* buffer,
   int idxIncr = blockDiff * BLOCKLEN/sizeof(struct entry);
   int idxMax = blocks * BLOCKLEN/sizeof(struct entry);
   double time1,diff;
+  int num_core=sched_getcpu();
 	time1=wtime();
   for(i=0; i<iter; i++) {
     lsum += buffer[0].v;
@@ -214,7 +215,7 @@ void runBench(struct entry* buffer,
 			diff=(trasv_count*max)/diff;
 			time1=wtime();
 			count_through=1;
-			printf("%f \n",diff);
+			printf("%d %f \n",num_core,diff);
 		}
       }
     }
