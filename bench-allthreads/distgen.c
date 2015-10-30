@@ -25,6 +25,11 @@ typedef struct {
 	int nthreads;
 } memory_region;
 
+struct perf_info{
+	double time;
+	double performance;
+	struct perf_info *next;
+} ;
 
 struct entry {
   double v;
@@ -174,15 +179,17 @@ int adjustSize(int size, int diff)
 
 void runBench(struct entry* buffer,
 	      int iter, int blocks, int blockDiff, int depChain,
-	      double* sum, unsigned long* aCount)
+	      double* sum, unsigned long* aCount, struct perf_info *perf_readings)
 {
   int i, d, k, j, idx, max;
   double lsum = *sum;
   int idxIncr = blockDiff * BLOCKLEN/sizeof(struct entry);
   int idxMax = blocks * BLOCKLEN/sizeof(struct entry);
-  double time1,diff;
+  double time1,time2, diff;
   int num_core=sched_getcpu();
+  struct perf_info *next_perfinfo, *new_perfinfo;
 	time1=wtime();
+  next_perfinfo=perf_readings;
   for(i=0; i<iter; i++) {
     lsum += buffer[0].v;
     for(d=0; d<distsUsed; d++) {
@@ -211,12 +218,23 @@ void runBench(struct entry* buffer,
 	  
 	}
 		if(count_through==trasv_count){
-			diff=wtime()-time1;
+			time2=wtime();
+			diff=time2-time1;
 			diff=(trasv_count*max)/diff;
 			time1=wtime();
 			count_through=1;
-			printf("%d %f \n",num_core,diff);
+			new_perfinfo= malloc(sizeof(struct perf_info));
+			next_perfinfo->time=time2;
+			next_perfinfo->performance=diff;
+			next_perfinfo->next=new_perfinfo;
+			next_perfinfo=new_perfinfo;
 		}
+		
+		struct perf_info{
+		double time;
+		double performance;
+		struct perf_info *next;
+		} ;
       }
     }
   }
@@ -392,7 +410,8 @@ int main(int argc, char* argv[])
   aCount = 0;
 
   tt = wtime();
-  
+  struct perf_info* performance_info=malloc(sizeof(struct perf_info));
+		                                                 
 #pragma omp parallel for reduction(+:sum) reduction(+:aCount)
   for(t=0; t<tcount; t++) {
     double tsum = 0.0;
@@ -409,14 +428,28 @@ int main(int argc, char* argv[])
 		printf("core %d was not found \n",num_core);
 	//we need to make sure to access only the initialized threads
     runBench(buffer[num_core], iter, blocks, blockDiff, depChain,
-	     &tsum, &taCount);
+	     &tsum, &taCount,&performance_info[num_core]);
 
     sum += tsum;
     aCount += taCount;
+	 printf("Core %d finished %f \n",num_core,wtime()-tt);
   }
-
+  double t3=tt;
   tt = wtime() - tt;
-
+ 
+  printf("PERFORMANCE INFORMATION \n");
+ 
+  for(i=0;i<num_initialized_threads;i++){ 
+	int current_thread=initialized_threads[i];
+	struct perf_info* current=&performance_info[current_thread];
+	double diff;
+	while(current){
+		diff=current->time-t3;
+		printf("CORE:%d %f %f \n ",current_thread, diff, current->performance);
+		current=current->next;
+	}
+  }
+  
   if (verbose) {
     double avg = tt * tcount / aCount * 1000000000.0;
     double cTime = 1000.0 / clockFreq;
