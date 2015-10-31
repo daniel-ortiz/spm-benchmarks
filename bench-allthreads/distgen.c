@@ -27,7 +27,7 @@ typedef struct {
 
 struct perf_info{
 	double time;
-	double performance;
+	long performance;
 	struct perf_info *next;
 } ;
 
@@ -36,13 +36,20 @@ struct entry {
   struct entry *next;
 };
 
+struct pf_readings{
+	long **counters;
+	struct perf_info  **perf_info;
+	struct perf_info  **perf_info_tail;
+};
+
 int distSize[MAXDISTCOUNT];
 int distIter[MAXDISTCOUNT];
 int distBlocks[MAXDISTCOUNT];
 int distsUsed = 0;
 int verbose = 0;
 int trasv_count=20;
-long count_through=1;
+int end_pfreading=0;
+int ncores;
 
  static  int cpu0[16]={0,1,2,3,4,5,6,7,16,17,18,19,20,21,22,23};
   static int cpu1[16]={8,9,10,11,12,13,14,15,24,25,26,27,28,29,30,31};
@@ -106,6 +113,49 @@ void * call_move_pages(void * arg){
 	int ret= 	move_pages(getpid(), pages_size-(9*pages_size/10), pages+begin, nodes+begin, status+begin,0);
 	}
 		
+}
+
+void * read_performance(void * arg){
+	struct pf_readings *readings=(struct pf_readings*) arg;
+	long** counters=readings->counters;
+	struct perf_info **perf_info= readings->perf_info;
+	struct perf_info **perf_info_tail= readings->perf_info_tail;
+	struct perf_info *new_entry;
+	int j;
+	long value;
+	double current_time;
+
+	while(!end_pfreading){
+		sleep(1);
+		//printf("awake to measure performance \n");
+		for(j=0; j<ncores;j++){
+			//create performance record
+			//add to list
+			current_time=wtime();
+			new_entry=malloc(sizeof(struct perf_info));
+			memset(new_entry, 0, sizeof(struct perf_info));
+			if(!perf_info[j]){
+				perf_info[j]=new_entry;
+			}
+			if(!perf_info_tail[j]){
+				perf_info_tail[j]=new_entry;	
+			}else{
+				perf_info_tail[j]->next=new_entry;
+				perf_info_tail[j]=new_entry;	
+			}
+			
+			new_entry->performance=*counters[j];
+			new_entry->time=current_time;
+			//printf("%d %ld %f \n",j,new_entry->performance, new_entry->time);
+			
+		}
+		
+	}
+	
+	/* struct pf_readings{
+	long **counters;
+	struct **perf_info;
+};	 */
 }
 
 void addDist(int size)
@@ -179,7 +229,7 @@ int adjustSize(int size, int diff)
 
 void runBench(struct entry* buffer,
 	      int iter, int blocks, int blockDiff, int depChain,
-	      double* sum, unsigned long* aCount, struct perf_info *perf_readings)
+	      double* sum, unsigned long* aCount, long* count_adv)
 {
   int i, d, k, j, idx, max;
   double lsum = *sum;
@@ -189,7 +239,7 @@ void runBench(struct entry* buffer,
   int num_core=sched_getcpu();
   struct perf_info *next_perfinfo, *new_perfinfo;
 	time1=wtime();
-  next_perfinfo=perf_readings;
+  //next_perfinfo=perf_readings;
   for(i=0; i<iter; i++) {
     lsum += buffer[0].v;
     for(d=0; d<distsUsed; d++) {
@@ -198,7 +248,8 @@ void runBench(struct entry* buffer,
 	//fprintf(stderr, "D %d, I %d\n", d, k);
 	*aCount += distBlocks[d];
 	max = distBlocks[d];
-	count_through++;
+	
+
 	if (!depChain) {
 	  idx = 0;
 	  for(j=0; j<max; j++) {
@@ -217,24 +268,8 @@ void runBench(struct entry* buffer,
 	  }
 	  
 	}
-		if(count_through==trasv_count){
-			time2=wtime();
-			diff=time2-time1;
-			diff=(trasv_count*max)/diff;
-			time1=wtime();
-			count_through=1;
-			new_perfinfo= malloc(sizeof(struct perf_info));
-			next_perfinfo->time=time2;
-			next_perfinfo->performance=diff;
-			next_perfinfo->next=new_perfinfo;
-			next_perfinfo=new_perfinfo;
-		}
+	*count_adv+=max;
 		
-		struct perf_info{
-		double time;
-		double performance;
-		struct perf_info *next;
-		} ;
       }
     }
   }
@@ -286,10 +321,11 @@ int main(int argc, char* argv[])
   struct entry* buffer[MAXTHREADS];
   double tt;
   int size_init=sizeof(int)*numa_num_configured_cpus();
+   ncores=numa_num_configured_cpus();
   int *initialized_threads=malloc(size_init);
   memset(initialized_threads,0,size_init );
   int num_initialized_threads=0;
-  pthread_t move_thread;
+  pthread_t move_thread,pf_read_thread;
   memory_region mr;
   verbose = 1;  
   for(arg=1; arg<argc; arg++) {
@@ -407,11 +443,33 @@ int main(int argc, char* argv[])
    #ifdef MOVEALL	
   	thr = pthread_create(&move_thread, NULL,&call_move_pages, &mr);
    #endif
-  aCount = 0;
-
-  tt = wtime();
-  struct perf_info* performance_info=malloc(sizeof(struct perf_info));
-		                                                 
+   
+	//TODO initialize to 0
+   long **count_adv=malloc(sizeof(long*)*MAXTHREADS);
+   struct perf_info** performance_info=malloc(sizeof(struct perf_info*)*MAXTHREADS);
+   memset(performance_info,0,sizeof(struct perf_info*)*MAXTHREADS);
+   struct perf_info** performance_info_tail=malloc(sizeof(struct perf_info*)*MAXTHREADS);
+   memset(performance_info_tail,0,sizeof(struct perf_info*)*MAXTHREADS);
+   
+   struct pf_readings preadings;
+   preadings.counters=count_adv;
+   preadings.perf_info=performance_info;
+    preadings.perf_info_tail=performance_info_tail;
+   thr = pthread_create(&pf_read_thread, NULL,&read_performance, &preadings);
+   aCount = 0;
+	
+	for(int i=0; i<MAXTHREADS; i++){
+		count_adv[i]=malloc(sizeof(long));
+		memset(count_adv[i],0,sizeof(long));
+	}
+	
+   tt = wtime();
+  
+	
+/* struct pf_readings{
+	long **counters;
+	struct **perf_info;
+};	 */
 #pragma omp parallel for reduction(+:sum) reduction(+:aCount)
   for(t=0; t<tcount; t++) {
     double tsum = 0.0;
@@ -428,7 +486,7 @@ int main(int argc, char* argv[])
 		printf("core %d was not found \n",num_core);
 	//we need to make sure to access only the initialized threads
     runBench(buffer[num_core], iter, blocks, blockDiff, depChain,
-	     &tsum, &taCount,&performance_info[num_core]);
+	     &tsum, &taCount,count_adv[num_core]);
 
     sum += tsum;
     aCount += taCount;
@@ -437,17 +495,49 @@ int main(int argc, char* argv[])
   double t3=tt;
   tt = wtime() - tt;
  
+  end_pfreading=1;
+
   printf("PERFORMANCE INFORMATION \n");
- 
+  int stay=1,first=1;
+  struct perf_info** currents=malloc(sizeof(struct perf_info*)*MAXTHREADS);
+  struct perf_info** previous=malloc(sizeof(struct perf_info*)*MAXTHREADS);
+  long accum;
+  double res;
+  //initialize the starting result arrays
+  for(i=0;i<MAXTHREADS;i++){ 
+	  currents[i]=performance_info[i];
+  } 
+  int current_core;
+  while(stay){
+	  stay=0;
+	  for(i=0;i<num_initialized_threads;i++){ 
+		  current_core=initialized_threads[i];
+		  if(currents[current_core]){
+			  stay+=1;
+			
+			  if(!first){
+				  printf("core %d value %ld %f\n",current_core, currents[current_core]->performance-previous[current_core]->performance ,currents[current_core]->time-t3);
+				  accum+=currents[current_core]->performance-previous[current_core]->performance;
+			  }
+			  previous[current_core]=currents[current_core];
+			  currents[current_core]=currents[current_core]->next;
+		  }
+		  
+	  }
+	  res=stay != 0 ? (float) accum/stay : -1;
+	  printf("AVERAGE value %f %f\n", res,previous[current_core]->time-t3);
+	  accum=0;
+	  first=0;
+  }
   for(i=0;i<num_initialized_threads;i++){ 
-	int current_thread=initialized_threads[i];
-	struct perf_info* current=&performance_info[current_thread];
-	double diff;
-	while(current){
-		diff=current->time-t3;
-		printf("CORE:%d %f %f \n ",current_thread, diff, current->performance);
-		current=current->next;
-	}
+	//int current_thread=initialized_threads[i];
+	//struct perf_info* current=&performance_info[current_thread];
+	//double diff;
+	//while(current){
+		//diff=current->time-t3;
+		//printf("CORE:%d %f %f \n ",current_thread, diff, current->performance);
+		//current=current->next;
+	//}
   }
   
   if (verbose) {
